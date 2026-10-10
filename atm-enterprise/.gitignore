@@ -1,0 +1,66 @@
+# ============================================================
+# .gitignore — ATM Enterprise
+# ============================================================
+
+# ---- Secrets / local config (NEVER commit) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+kubeconfig
+kubeconfig.*
+
+# ---- Java / Maven ----
+target/
+*.class
+*.jar
+*.war
+*.ear
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.properties
+hs_err_pid*
+
+# ---- Node / Frontend ----
+node_modules/
+dist/
+build/
+.npm/
+.pnp/
+.pnp.js
+.eslintcache
+.parcel-cache
+.vite/
+coverage/
+
+# ---- IDE ----
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+.project
+.classpath
+.settings/
+.factorypath
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Logs / runtime ----
+*.log
+logs/
+tmp/
+*.pid
+
+# ---- Misc ----
+*.swp
+*.swo
+*~
+.cache/
+.history/

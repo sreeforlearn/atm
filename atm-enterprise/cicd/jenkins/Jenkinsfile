@@ -1,0 +1,218 @@
+// ============================================================
+// Jenkinsfile — full CI/CD pipeline for the ATM Enterprise
+// project. Builds, tests, analyzes, dockerizes, and deploys
+// all five microservices + the React frontend.
+// ============================================================
+
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven-3.9'
+        jdk    'JDK-17'
+    }
+
+    environment {
+        // Registry namespace for all images. Pull creds come from
+        // the Jenkins 'docker-hub' credentials binding below.
+        DOCKER_REGISTRY     = credentials('docker-hub-registry')      // e.g. docker.io/myuser
+        DOCKER_CREDS        = credentials('docker-hub')               // username:password
+        SONAR_HOST          = 'http://sonarqube:9000'
+        SONAR_TOKEN         = credentials('sonar-token')
+        KUBECONFIG          = credentials('kubeconfig-atm')
+        IMAGE_TAG           = "${env.BUILD_NUMBER}-${env.GIT_COMMIT?.take(8) ?: 'nogit'}"
+        SERVICES            = 'auth-service account-service transaction-service card-service apigateway'
+    }
+
+    options {
+        timestamps()
+        ansiColor('xterm')
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        disableConcurrentBuilds()
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_COMMIT  = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
+                    env.GIT_BRANCH  = sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
+                    echo "Building commit ${env.GIT_COMMIT} on branch ${env.GIT_BRANCH}"
+                }
+            }
+        }
+
+        stage('Build') {
+            parallel {
+                stage('Backend (Maven)') {
+                    steps {
+                        script {
+                            def svcs = env.SERVICES.tokenize(' ')
+                            def builds = [:]
+                            for (int i = 0; i < svcs.size(); i++) {
+                                def svc = svcs[i]
+                                builds["build-${svc}"] = {
+                                    sh "mvn -B clean package -DskipTests -pl services/${svc} -am"
+                                }
+                            }
+                            parallel builds
+                        }
+                    }
+                }
+                stage('Frontend (npm)') {
+                    steps {
+                        dir('frontend') {
+                            sh 'npm ci --no-audit --no-fund'
+                            sh 'npm run build --if-present'
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'frontend/dist/**', allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Test') {
+            parallel {
+                stage('Backend tests') {
+                    steps {
+                        script {
+                            def svcs = env.SERVICES.tokenize(' ')
+                            def tests = [:]
+                            for (int i = 0; i < svcs.size(); i++) {
+                                def svc = svcs[i]
+                                tests["test-${svc}"] = {
+                                    sh "mvn -B test -pl services/${svc}"
+                                }
+                            }
+                            parallel tests
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true,
+                                  testResults: 'services/**/target/surefire-reports/*.xml'
+                        }
+                    }
+                }
+                stage('Frontend tests') {
+                    steps {
+                        dir('frontend') {
+                            sh 'npm test -- --watch=false --if-present'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            when { expression { env.SONAR_TOKEN != null && env.SONAR_TOKEN.trim() != '' } }
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh """
+                        mvn -B sonar:sonar \
+                            -Dsonar.host.url=${SONAR_HOST} \
+                            -Dsonar.login=${SONAR_TOKEN} \
+                            -Dsonar.projectKey=atm-enterprise \
+                            -Dsonar.projectName='ATM Enterprise' \
+                            -Dsonar.sources=services,frontend/src \
+                            -Dsonar.exclusions=**/target/**,**/node_modules/**
+                    """
+                }
+            }
+        }
+        // Gate builds on Sonar quality if the server supports it.
+        stage('Sonar Quality Gate') {
+            when { expression { env.SONAR_TOKEN != null && env.SONAR_TOKEN.trim() != '' } }
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Docker Build & Push') {
+            when { branch 'main' }
+            steps {
+                script {
+                    docker.withRegistry("https://${env.DOCKER_REGISTRY}", 'docker-hub') {
+                        def svcs = env.SERVICES.tokenize(' ')
+                        def builds = [:]
+                        // Backend services
+                        for (int i = 0; i < svcs.size(); i++) {
+                            def svc = svcs[i]
+                            builds["docker-${svc}"] = {
+                                def img = docker.build("${env.DOCKER_REGISTRY}/${svc}:${env.IMAGE_TAG}",
+                                                       "-f services/${svc}/Dockerfile services/${svc}")
+                                img.push()
+                                // also tag latest
+                                sh "docker tag ${env.DOCKER_REGISTRY}/${svc}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY}/${svc}:latest"
+                                sh "docker push ${env.DOCKER_REGISTRY}/${svc}:latest"
+                            }
+                        }
+                        // Frontend
+                        builds['docker-frontend'] = {
+                            def fe = docker.build("${env.DOCKER_REGISTRY}/frontend:${env.IMAGE_TAG}",
+                                                  "-f frontend/Dockerfile frontend")
+                            fe.push()
+                            sh "docker tag ${env.DOCKER_REGISTRY}/frontend:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY}/frontend:latest"
+                            sh "docker push ${env.DOCKER_REGISTRY}/frontend:latest"
+                        }
+                        parallel builds
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to K8s') {
+            when { branch 'main' }
+            environment {
+                KUBECONFIG = credentials('kubeconfig-atm')
+            }
+            steps {
+                sh '''
+                    set -e
+                    kubectl version --client
+                    kubectl apply -f k8s/namespaces/
+                    kubectl apply -f k8s/config/
+                    kubectl apply -f k8s/postgres/
+                    kubectl apply -f k8s/kafka.yaml
+                    kubectl apply -f k8s/auth-service/
+                    kubectl apply -f k8s/account-service/
+                    kubectl apply -f k8s/transaction-service/
+                    kubectl apply -f k8s/card-service/
+                    kubectl apply -f k8s/apigateway/
+                    kubectl apply -f k8s/frontend/
+                    kubectl apply -f k8s/ingress/
+
+                    for svc in auth-service account-service transaction-service card-service apigateway frontend; do
+                        kubectl -n atm-dev rollout status deployment/$svc --timeout=180s
+                    done
+                '''
+            }
+        }
+    }
+
+    post {
+        success { echo "Pipeline SUCCESS — image tag ${env.IMAGE_TAG}" }
+        unstable { echo "Pipeline UNSTABLE — review Sonar / test results" }
+        failure {
+            emailext(
+                subject: "ATM Enterprise build #${env.BUILD_NUMBER} FAILED",
+                body: "See ${env.BUILD_URL}",
+                to: "${env.CHANGE_AUTHOR_EMAIL ?: 'dev-null@atm-enterprise.example'}"
+            )
+        }
+        always {
+            archiveArtifacts artifacts: 'services/**/target/*.jar',
+                            allowEmptyArchive: true
+            cleanWs notFailBuild: true
+        }
+    }
+}

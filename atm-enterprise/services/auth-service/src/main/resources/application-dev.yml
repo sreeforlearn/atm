@@ -1,0 +1,20 @@
+# Local development overrides for auth-service
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/atmdb
+    username: atmuser
+    password: atmsecret
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+
+app:
+  jwt:
+    secret: dev-secret-key-change-me-in-production-please-256bits
+    expiration-ms: 3600000
+
+logging:
+  level:
+    com.atm.auth: DEBUG
+    org.springframework.security: DEBUG

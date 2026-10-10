@@ -1,0 +1,87 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: apigateway
+  cloud:
+    gateway:
+      # Per-service routing for downstream ATM Enterprise microservices.
+      routes:
+        - id: auth-service
+          uri: ${AUTH_SERVICE_URL:http://auth-service:8081}
+          predicates:
+            - Path=/api/auth/**
+          filters:
+            - StripPrefix=0
+
+        - id: account-service
+          uri: ${ACCOUNT_SERVICE_URL:http://account-service:8082}
+          predicates:
+            - Path=/api/accounts/**
+          filters:
+            - StripPrefix=0
+
+        - id: transaction-service
+          uri: ${TRANSACTION_SERVICE_URL:http://transaction-service:8083}
+          predicates:
+            - Path=/api/transactions/**
+          filters:
+            - StripPrefix=0
+
+        - id: card-service
+          uri: ${CARD_SERVICE_URL:http://card-service:8084}
+          predicates:
+            - Path=/api/cards/**
+          filters:
+            - StripPrefix=0
+
+      # Global CORS configuration
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_UNIQUE
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowed-origin-patterns: "*"
+            allowed-methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+            allowed-headers: "*"
+            allow-credentials: true
+            max-age: 3600
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:Y2hhbmdlLW1lLXN1cGVyLXNlY3JldC1rZXktZm9yLWF0bS1lbnRlcnByaXNlLWp3dC1zaWduaW5nLWtleS0yNTZiaXRz}
+  rate-limit:
+    requests-per-minute: 100
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    urls:
+      - name: Auth Service
+        url: /api/auth/v3/api-docs
+      - name: Account Service
+        url: /api/accounts/v3/api-docs
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    com.atm.gateway: INFO
+    org.springframework.cloud.gateway: INFO
+    org.springframework.security: INFO

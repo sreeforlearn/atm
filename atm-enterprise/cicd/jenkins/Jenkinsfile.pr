@@ -1,0 +1,89 @@
+// ============================================================
+// Jenkinsfile.pr — lightweight PR verification pipeline.
+// Builds + tests the affected service(s) only; no Docker push,
+// no K8s deploy.
+// ============================================================
+
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven-3.9'
+        jdk   'JDK-17'
+    }
+
+    environment {
+        CHANGED_SERVICES = ''
+    }
+
+    options {
+        timestamps()
+        ansiColor('xterm')
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Detect changed services') {
+            steps {
+                script {
+                    def changed = sh(
+                        returnStdout: true,
+                        script: "git diff --name-only origin/main...HEAD"
+                    ).trim().tokenize('\n')
+                    def svcs = changed.collect { it.split('/')[1] }
+                            .unique()
+                            .findAll { it in ['auth-service','account-service','transaction-service','card-service','apigateway'] }
+                    if (changed.any { it.startsWith('frontend/') }) { svcs << 'frontend' }
+                    env.CHANGED_SERVICES = svcs.join(' ')
+                    echo "Changed services: ${env.CHANGED_SERVICES}"
+                }
+            }
+        }
+
+        stage('Build & Test') {
+            when { expression { env.CHANGED_SERVICES?.trim() != '' } }
+            steps {
+                script {
+                    def svcs = env.CHANGED_SERVICES.tokenize(' ')
+                    def jobs = [:]
+                    for (int i = 0; i < svcs.size(); i++) {
+                        def svc = svcs[i]
+                        if (svc == 'frontend') {
+                            jobs[svc] = {
+                                dir('frontend') {
+                                    sh 'npm ci --no-audit --no-fund'
+                                    sh 'npm run build --if-present'
+                                    sh 'npm test -- --watch=false --if-present'
+                                }
+                            }
+                        } else {
+                            jobs[svc] = {
+                                sh "mvn -B clean test -pl services/${svc} -am"
+                            }
+                        }
+                    }
+                    parallel jobs
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true,
+                          testResults: 'services/**/target/surefire-reports/*.xml'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs notFailBuild: true
+        }
+    }
+}

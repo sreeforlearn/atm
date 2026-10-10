@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apigateway
+  namespace: atm-dev
+  labels:
+    app.kubernetes.io/name: apigateway
+    app.kubernetes.io/part-of: atm-enterprise
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: apigateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: apigateway
+        app.kubernetes.io/part-of: atm-enterprise
+        app.kubernetes.io/component: gateway
+    spec:
+      containers:
+        - name: apigateway
+          image: atm/apigateway:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: prod
+            - name: SERVER_PORT
+              value: "8080"
+            # Service discovery for downstream microservices
+            - name: AUTH_SERVICE_HOST
+              value: auth-service
+            - name: AUTH_SERVICE_PORT
+              value: "8081"
+            - name: ACCOUNT_SERVICE_HOST
+              value: account-service
+            - name: ACCOUNT_SERVICE_PORT
+              value: "8082"
+            - name: TRANSACTION_SERVICE_HOST
+              value: transaction-service
+            - name: TRANSACTION_SERVICE_PORT
+              value: "8083"
+            - name: CARD_SERVICE_HOST
+              value: card-service
+            - name: CARD_SERVICE_PORT
+              value: "8084"
+          envFrom:
+            - configMapRef:
+                name: atm-config
+            - secretRef:
+                name: atm-secrets
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

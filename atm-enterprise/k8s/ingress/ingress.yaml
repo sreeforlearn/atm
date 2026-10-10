@@ -1,0 +1,41 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: atm-ingress
+  namespace: atm-dev
+  labels:
+    app.kubernetes.io/part-of: atm-enterprise
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: atm.local
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: apigateway
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+# To enable TLS (uncomment + provide a tls secret):
+#  tls:
+#    - hosts:
+#        - atm.local
+#      secretName: atm-tls
+# Create the secret with:
+#   kubectl -n atm-dev create secret tls atm-tls \
+#     --cert=path/to/tls.crt --key=path/to/tls.key

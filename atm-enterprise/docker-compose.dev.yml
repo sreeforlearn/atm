@@ -1,0 +1,92 @@
+# ============================================================
+# docker-compose.dev.yml — override for hot-reload local dev.
+# Use with:  docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Mounts source folders and runs the dev-mode command per service.
+# ============================================================
+version: "3.9"
+
+services:
+  # ---- Postgres: keep stock image, expose to host tooling ----
+  postgres:
+    ports:
+      - "5432:5432"
+
+  kafka:
+    ports:
+      - "9092:9092"
+
+  # ---- Backend: mount src + run Spring devtools with remote restart ----
+  auth-service:
+    build:
+      target: dev   # if Dockerfile has a multi-stage dev target
+    command: mvn -f /app/pom.xml spring-boot:run -Dspring-boot.run.jvmArguments="-Dspring.devtools.restart.enabled=true"
+    volumes:
+      - ./services/auth-service:/app:cached
+      - maven_repo:/root/.m2
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SPRING_DEVTOOLS_LIVERELOAD_ENABLED: "true"
+    ports:
+      - "8081:8081"
+      - "8001:8000"   # remote JVM debug
+
+  account-service:
+    build:
+      target: dev
+    command: mvn -f /app/pom.xml spring-boot:run
+    volumes:
+      - ./services/account-service:/app:cached
+      - maven_repo:/root/.m2
+    ports:
+      - "8082:8082"
+      - "8002:8000"
+
+  transaction-service:
+    build:
+      target: dev
+    command: mvn -f /app/pom.xml spring-boot:run
+    volumes:
+      - ./services/transaction-service:/app:cached
+      - maven_repo:/root/.m2
+    ports:
+      - "8083:8083"
+      - "8003:8000"
+
+  card-service:
+    build:
+      target: dev
+    command: mvn -f /app/pom.xml spring-boot:run
+    volumes:
+      - ./services/card-service:/app:cached
+      - maven_repo:/root/.m2
+    ports:
+      - "8084:8084"
+      - "8004:8000"
+
+  apigateway:
+    build:
+      target: dev
+    command: mvn -f /app/pom.xml spring-boot:run
+    volumes:
+      - ./services/apigateway:/app:cached
+      - maven_repo:/root/.m2
+    ports:
+      - "8080:8080"
+      - "8000:8000"
+
+  # ---- Frontend: Vite dev server with HMR on 5173 ----
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0 --port 5173"
+    volumes:
+      - ./frontend:/app:cached
+      - node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8080
+
+volumes:
+  maven_repo:
+  node_modules:

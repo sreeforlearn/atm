@@ -1,0 +1,141 @@
+# ============================================================
+# Jenkins Configuration-as-Code (JCasC)
+# Drop into /var/jenkins_home/casc_configs/ (or mount as a
+# ConfigMap when running Jenkins on Kubernetes). Point
+# CASC_JENKINS_CONFIG to this file.
+# ============================================================
+
+jenkins:
+  systemMessage: |
+    ATM Enterprise — Jenkins (managed by Configuration-as-Code).
+    Do NOT edit configuration through the UI; update JCasC YAML
+    and let Jenkins reload it.
+  numExecutors: 4
+  mode: NORMAL
+  scmCheckoutRetryCount: 2
+  quietPeriod: 5
+  disableRememberMe: false
+  remotingSecurity:
+    enabled: true
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: admin
+          # Replace with bcrypt hash of your real password.
+          # Generate: java -jar jenkins-cli.jar hash-password
+          password: "$2a$10$abc...replace-with-real-bcrypt..."
+  authorizationStrategy:
+    roleBased:
+      roles:
+        global:
+          - name: "admin"
+            description: "ATM Enterprise admins"
+            permissions:
+              - "Overall/Administer"
+            assignments:
+              - "admin"
+          - name: "developer"
+            description: "Read + build"
+            permissions:
+              - "Overall/Read"
+              - "Job/Read"
+              - "Job/Build"
+              - "Job/Cancel"
+            assignments:
+              - "developer"
+
+tool:
+  git:
+    installations:
+      - name: git-default
+        home: /usr/bin/git
+  jdk:
+    installations:
+      - name: JDK-17
+        home: /opt/java/openjdk
+  maven:
+    installations:
+      - name: Maven-3.9
+        home: /usr/share/maven
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          # Docker Hub — replace via real vault / external secrets.
+          - usernamePassword:
+              id: docker-hub
+              username: "${env.DOCKER_USERNAME}"
+              password: "${env.DOCKER_PASSWORD}"
+              scope: GLOBAL
+              description: "Docker Hub push credentials"
+          - string:
+              id: docker-hub-registry
+              secret: "docker.io/atmuser"
+              scope: GLOBAL
+              description: "Registry namespace to push to"
+          - string:
+              id: sonar-token
+              secret: "${env.SONAR_TOKEN}"
+              scope: GLOBAL
+              description: "SonarQube analysis token"
+          - kubeconfigCredentials:
+              id: kubeconfig-atm
+              scope: GLOBAL
+              description: "Kubeconfig for the atm-dev cluster"
+
+unclassified:
+  sonarGlobalConfiguration:
+    installations:
+      - name: SonarQube
+        serverUrl: http://sonarqube:9000
+        credentialsId: sonar-token
+  location:
+    url: http://jenkins.atm.local/
+    adminAddress: jenkins@atm-enterprise.example
+
+jobs:
+  - script: >
+      multibranchPipelineJob('atm-enterprise') {
+        branchSources {
+          github {
+            id 'atm-enterprise-github'
+            repoOwner 'atm-enterprise'
+            repository 'atm-enterprise'
+            scanCredentialsId 'github-app'
+            buildForkPRHead false
+          }
+        }
+        orphanedItemStrategy { discardOldItems { daysToKeep 14 } }
+      }
+  - script: >
+      pipelineJob('atm-enterprise-pr') {
+        definition {
+          cps {
+            script(readFileFromWorkspace('cicd/jenkins/Jenkinsfile.pr'))
+            sandbox()
+          }
+        }
+      }
+
+# Plugins we depend on (resolved by the install-plugins.sh entrypoint).
+# These are listed here for documentation purposes only — the
+# official jenkins/jenkins image reads /usr/share/jenkins/ref/plugins.txt
+# at first boot. JCasC will refuse to apply if a plugin referenced
+# here is missing.
+plugins:
+  - kubernetes
+  - docker-workflow
+  - docker
+  - workflow-aggregator
+  - pipeline-stage-view
+  - blueocean
+  - sonar
+  - maven-plugin
+  - config-file-provider
+  - credentials-binding
+  - job-dsl
+  - ansicolor
+  - timestamper
+  - junit

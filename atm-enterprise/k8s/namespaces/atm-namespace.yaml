@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: atm-dev
+  labels:
+    name: atm-dev
+    app.kubernetes.io/part-of: atm-enterprise
+    environment: dev
+spec:
+  finalizers:
+    - kubernetes

@@ -1,0 +1,222 @@
+# ============================================================
+# docker-compose.yml — local dev stack for ATM Enterprise
+# Brings up Postgres, Zookeeper, Kafka, all 5 microservices, and
+# the React frontend in one network.
+# ============================================================
+version: "3.9"
+
+networks:
+  atm-net:
+    name: atm-net
+    driver: bridge
+
+volumes:
+  db_data:
+    name: atm_db_data
+
+services:
+  # ----------------------------------------------------------
+  # Postgres
+  # ----------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: atm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-atm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-atm123}
+      POSTGRES_DB: ${POSTGRES_DB:-atmdb}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [atm-net]
+
+  # ----------------------------------------------------------
+  # Zookeeper (for bitnami/kafka:3.7 dev defaults)
+  # ----------------------------------------------------------
+  zookeeper:
+    image: bitnami/zookeeper:latest
+    container_name: atm-zookeeper
+    restart: unless-stopped
+    environment:
+      ALLOW_ANONYMOUS_LOGIN: "yes"
+    ports:
+      - "2181:2181"
+    networks: [atm-net]
+
+  # ----------------------------------------------------------
+  # Kafka (single broker, KRaft mode for dev)
+  # ----------------------------------------------------------
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: atm-kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_NODE_ID: "1"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Legacy ZK-mode bits (ignored in KRaft, but no-op safe).
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+    ports:
+      - "9092:9092"
+    networks: [atm-net]
+
+  # ----------------------------------------------------------
+  # Backend microservices
+  # ----------------------------------------------------------
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    container_name: atm-auth-service
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SERVER_PORT: "8081"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: atmdb
+      JWT_EXPIRATION_MS: "3600000"
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC_TRANSACTIONS: atm.transactions
+      KAFKA_TOPIC_AUDIT: atm.audit
+    env_file:
+      - .env
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [atm-net]
+
+  account-service:
+    build:
+      context: ./services/account-service
+      dockerfile: Dockerfile
+    container_name: atm-account-service
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SERVER_PORT: "8082"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: atmdb
+      KAFKA_BROKERS: kafka:9092
+    env_file:
+      - .env
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [atm-net]
+
+  transaction-service:
+    build:
+      context: ./services/transaction-service
+      dockerfile: Dockerfile
+    container_name: atm-transaction-service
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SERVER_PORT: "8083"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: atmdb
+      KAFKA_BROKERS: kafka:9092
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    env_file:
+      - .env
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    networks: [atm-net]
+
+  card-service:
+    build:
+      context: ./services/card-service
+      dockerfile: Dockerfile
+    container_name: atm-card-service
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SERVER_PORT: "8084"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: atmdb
+    env_file:
+      - .env
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [atm-net]
+
+  apigateway:
+    build:
+      context: ./services/apigateway
+      dockerfile: Dockerfile
+    container_name: atm-apigateway
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SERVER_PORT: "8080"
+      AUTH_SERVICE_HOST: auth-service
+      AUTH_SERVICE_PORT: "8081"
+      ACCOUNT_SERVICE_HOST: account-service
+      ACCOUNT_SERVICE_PORT: "8082"
+      TRANSACTION_SERVICE_HOST: transaction-service
+      TRANSACTION_SERVICE_PORT: "8083"
+      CARD_SERVICE_HOST: card-service
+      CARD_SERVICE_PORT: "8084"
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    depends_on:
+      - auth-service
+      - account-service
+      - transaction-service
+      - card-service
+    networks: [atm-net]
+
+  # ----------------------------------------------------------
+  # Frontend
+  # ----------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: atm-frontend
+    restart: unless-stopped
+    environment:
+      API_GATEWAY_URL: http://apigateway:8080
+    ports:
+      - "80:80"
+    depends_on:
+      - apigateway
+    networks: [atm-net]

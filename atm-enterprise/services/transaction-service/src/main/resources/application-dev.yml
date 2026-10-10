@@ -1,0 +1,21 @@
+server:
+  port: 8083
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/atmdb
+    username: postgres
+    password: postgres
+  jpa:
+    show-sql: true
+  kafka:
+    bootstrap-servers: localhost:9092
+
+app:
+  account-service-url: http://localhost:8082
+
+logging:
+  level:
+    com.atm.transaction: DEBUG
+    org.springframework.web: DEBUG
+    org.hibernate.SQL: DEBUG
